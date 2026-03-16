@@ -5,15 +5,22 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+# copy dependency files first
 COPY pyproject.toml README.md ./
+
+RUN pip install --upgrade pip \
+    && pip install .
+
+# copy source code AFTER dependencies
 COPY apps ./apps
 COPY core ./core
 COPY workflows ./workflows
 COPY mcp_servers ./mcp_servers
 COPY mlops ./mlops
-
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
 
 EXPOSE 8000
 

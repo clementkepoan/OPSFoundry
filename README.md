@@ -13,6 +13,12 @@ This repository currently includes:
 - LangChain and DeepSeek environment wiring
 - Dynamic workflow registry
 - Initial `invoice_autoposting` plugin contract
+- Upload intake flow with file-backed document and work item storage
+- Tesseract OCR for images and PDFs in Docker, plus text-native parsing for plain-text files
+- Structured invoice extraction with DeepSeek or deterministic fallback parsing
+- Validation, anomaly detection, review queue, CSV/JSON export, and audit logging
+- MLflow-ready observability and eval-set execution
+- Postgres-backed persistence for work items and audit events
 
 ## Quick Start
 
@@ -23,7 +29,42 @@ This repository currently includes:
 docker compose up --build
 ```
 
-3. Open the API docs at `http://localhost:8000/docs`.
+3. Open the frontend at `http://localhost:3000`.
+4. Open the API docs at `http://localhost:8000/docs`.
+5. Open MLflow UI at `http://localhost:5055` if you start the full compose stack.
+
+Example upload:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/workflows/invoice_autoposting/documents \
+  -F "file=@sample.txt;type=text/plain"
+```
+
+The Next.js frontend lives in `apps/frontend/` and connects to the API with `NEXT_PUBLIC_API_BASE_URL`.
+
+Run extraction for a work item:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/work-items/<work-item-id>/extract
+```
+
+Validate, review, and export:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/work-items/<work-item-id>/validate
+curl http://localhost:8000/api/v1/review-queue
+curl -X POST http://localhost:8000/api/v1/work-items/<work-item-id>/review \
+  -H "Content-Type: application/json" \
+  -d '{"action":"approve","review_notes":"Reviewed and approved"}'
+curl -X POST "http://localhost:8000/api/v1/work-items/<work-item-id>/export?export_format=csv"
+```
+
+Observability and evals:
+
+```bash
+curl http://localhost:8000/api/v1/observability/status
+curl -X POST "http://localhost:8000/api/v1/evals/invoice_autoposting/run?mode=fallback"
+```
 
 ## Project Structure
 
@@ -31,8 +72,18 @@ docker compose up --build
 apps/
   api/
 core/
+  audit/
   config/
+  document_processing/
+  evaluation/
+  exports/
+  intake/
+  observability/
   orchestration/
+  review_engine/
+  storage/
+  validation/
+  work_items/
   workflow_registry/
 workflows/
   invoice_autoposting/
@@ -40,7 +91,15 @@ mcp_servers/
   coa_tool/
 mlops/
   eval_sets/
+storage/
+  audit/
+  documents/
+  exports/
+  mlruns/
+  work_items/
 ```
+
+Operational workflow state now persists in Postgres by default for work items and audit events. Raw documents, exports, and MLflow artifacts remain file-backed under `storage/`.
 
 ## Planned Delivery Sequence
 

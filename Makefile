@@ -1,4 +1,4 @@
-.PHONY: install run up down test lint
+.PHONY: install run up down test lint frontend
 
 install:
 	pip install -e ".[dev]"
@@ -17,3 +17,6 @@ test:
 
 lint:
 	ruff check .
+
+frontend:
+	cd apps/frontend && npm run dev

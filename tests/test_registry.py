@@ -1,4 +1,4 @@
-from core.workflow_registry.registry import get_registry
+from core.workflows.registry import get_registry
 
 
 def test_registry_discovers_invoice_workflow() -> None:

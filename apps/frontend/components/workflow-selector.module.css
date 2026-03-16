@@ -1,0 +1,178 @@
+.shell {
+  width: min(1380px, calc(100vw - 36px));
+  margin: 0 auto;
+  padding: 28px 0 40px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.8fr);
+  gap: 22px;
+  margin-bottom: 24px;
+}
+
+.copy,
+.endpointCard,
+.card {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.copy,
+.endpointCard {
+  border-radius: 28px;
+}
+
+.copy {
+  padding: 34px;
+  background:
+    radial-gradient(circle at top left, rgba(116, 215, 196, 0.16), transparent 34%),
+    linear-gradient(145deg, rgba(10, 14, 24, 0.94), rgba(17, 25, 37, 0.94));
+}
+
+.kicker {
+  margin: 0 0 10px;
+  font-size: 0.74rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.copy h1 {
+  margin: 0;
+  max-width: 11ch;
+  font-size: clamp(2.9rem, 5vw, 5rem);
+  line-height: 0.96;
+}
+
+.lead,
+.endpointCard p {
+  color: var(--muted);
+  line-height: 1.72;
+}
+
+.lead {
+  max-width: 60ch;
+  margin: 18px 0 0;
+}
+
+.endpointCard {
+  padding: 22px;
+}
+
+.endpointCard span,
+.cardTop span,
+.flow span {
+  color: var(--muted);
+}
+
+.endpointCard code {
+  display: block;
+  margin-top: 10px;
+  color: var(--accent-2);
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.card {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border-radius: 24px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(10, 15, 24, 0.92);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(140, 188, 255, 0.28);
+  background:
+    linear-gradient(180deg, rgba(140, 188, 255, 0.07), rgba(255, 255, 255, 0.02)),
+    rgba(10, 15, 24, 0.96);
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cardTop p,
+.card h2,
+.card strong {
+  margin: 0;
+}
+
+.cardTop p {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.76rem;
+}
+
+.card h2 {
+  font-size: 1.42rem;
+  line-height: 1.35;
+}
+
+.flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flow span {
+  padding: 8px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.card strong {
+  color: var(--text);
+}
+
+@media (max-width: 980px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .shell {
+    width: min(100vw - 20px, 100%);
+    padding: 18px 0 24px;
+  }
+
+  .copy,
+  .endpointCard,
+  .card {
+    border-radius: 22px;
+  }
+
+  .copy {
+    padding: 20px;
+  }
+
+  .copy h1 {
+    font-size: 2.6rem;
+  }
+}

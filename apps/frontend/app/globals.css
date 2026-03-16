@@ -1,0 +1,44 @@
+:root {
+  --bg: #071018;
+  --surface: rgba(10, 16, 26, 0.86);
+  --line: rgba(149, 168, 196, 0.16);
+  --text: #f3f6fb;
+  --muted: #8fa3bd;
+  --accent: #74d7c4;
+  --accent-2: #8cbcff;
+  --danger: #ff7d86;
+  --warning: #f2c25b;
+  --success: #74d7c4;
+  --shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(116, 215, 196, 0.12), transparent 30%),
+    radial-gradient(circle at top right, rgba(140, 188, 255, 0.12), transparent 26%),
+    linear-gradient(180deg, #04080d 0%, #09111a 42%, #071018 100%);
+  color: var(--text);
+  font-family: "Sora", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}

@@ -2,7 +2,7 @@ from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
 
-from core.workflow_registry.base import BaseWorkflow
+from core.workflows.base import BaseWorkflow
 
 WORKFLOWS_ROOT = Path(__file__).resolve().parents[2] / "workflows"
 

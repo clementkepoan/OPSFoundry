@@ -1,5 +1,7 @@
 from typing import Any
 
+from pydantic import BaseModel
+
 from core.config.settings import Settings
 
 
@@ -63,3 +65,37 @@ class LangChainWorkflowEngine:
             }
         )
         return {"workflow_name": workflow_name, "summary": response.content}
+
+    async def extract_structured(
+        self,
+        workflow_name: str,
+        system_prompt: str,
+        document_text: str,
+        output_model: type[BaseModel],
+    ) -> BaseModel:
+        if not self.is_ready():
+            raise RuntimeError("DEEPSEEK_API_KEY is not configured.")
+
+        from langchain_core.prompts import ChatPromptTemplate
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                (
+                    "human",
+                    (
+                        "Workflow: {workflow_name}\n"
+                        "Extract the document into the required JSON schema.\n"
+                        "Document text:\n{document_text}"
+                    ),
+                ),
+            ]
+        )
+        llm = self.build_llm().with_structured_output(output_model)
+        chain = prompt | llm
+        return await chain.ainvoke(
+            {
+                "workflow_name": workflow_name,
+                "document_text": document_text,
+            }
+        )

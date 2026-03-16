@@ -1,0 +1,6 @@
+Acme Office Supply
+Invoice Number: INV-1001
+Invoice Date: 2025-01-15
+Subtotal: 120.00
+Tax: 5.50
+Total: 125.50

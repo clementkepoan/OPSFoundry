@@ -1,16 +1,7 @@
 from datetime import date
-from decimal import Decimal
 
-from pydantic import BaseModel, Field
-
+from core.workflows.validation_models import AnomalyFlag, ValidationResult
 from workflows.invoice_autoposting.schemas import AccountingEntry
-
-
-class ValidationResult(BaseModel):
-    name: str
-    passed: bool
-    message: str | None = None
-    details: dict[str, str] = Field(default_factory=dict)
 
 
 def totals_match(entry: AccountingEntry) -> ValidationResult:
@@ -51,9 +42,63 @@ def valid_date(entry: AccountingEntry) -> ValidationResult:
     )
 
 
+def meaningful_amounts(entry: AccountingEntry) -> ValidationResult:
+    passed = any(amount > 0 for amount in (entry.subtotal, entry.tax_amount, entry.total_amount))
+    return ValidationResult(
+        name="meaningful_amounts",
+        passed=passed,
+        message=None if passed else "Invoice amounts cannot all be zero.",
+        details={
+            "subtotal": str(entry.subtotal),
+            "tax_amount": str(entry.tax_amount),
+            "total_amount": str(entry.total_amount),
+        },
+    )
+
+
 def run_validators(entry: AccountingEntry) -> list[ValidationResult]:
     return [
         totals_match(entry),
         required_fields_present(entry),
         valid_date(entry),
+        meaningful_amounts(entry),
     ]
+
+
+def detect_anomalies(
+    entry: AccountingEntry,
+    validation_results: list[ValidationResult],
+) -> list[AnomalyFlag]:
+    anomalies: list[AnomalyFlag] = []
+
+    for result in validation_results:
+        if not result.passed:
+            anomalies.append(
+                AnomalyFlag(
+                    code=f"validation_{result.name}",
+                    severity="high",
+                    message=result.message or f"Validation '{result.name}' failed.",
+                    details=result.details,
+                )
+            )
+
+    if entry.total_amount >= 10000:
+        anomalies.append(
+            AnomalyFlag(
+                code="high_value_invoice",
+                severity="medium",
+                message="Invoice total exceeds the high-value review threshold.",
+                details={"threshold": "10000.00", "reported_total": str(entry.total_amount)},
+            )
+        )
+
+    if not entry.payment_terms:
+        anomalies.append(
+            AnomalyFlag(
+                code="missing_payment_terms",
+                severity="low",
+                message="Payment terms were not extracted.",
+            )
+        )
+
+    return anomalies

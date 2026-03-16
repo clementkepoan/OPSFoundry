@@ -2,6 +2,7 @@
   {
     "document_id": "sample-invoice-001",
     "workflow": "invoice_autoposting",
+    "source_text": "Acme Office Supply\nInvoice Number: INV-1001\nInvoice Date: 2025-01-15\nCurrency: USD\nSubtotal: 120.00\nTax: 5.50\nTotal: 125.50\nPayment Terms: Net 30\n",
     "expected_fields": {
       "vendor_name": "Acme Office Supply",
       "invoice_number": "INV-1001",

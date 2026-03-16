@@ -1,4 +1,14 @@
 services:
+  frontend:
+    build:
+      context: ./apps/frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
   api:
     build:
       context: .
@@ -11,6 +21,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - storage_data:/app/storage
+
+  mlflow:
+    build:
+      context: .
+    env_file:
+      - .env
+    command: ["mlflow", "ui", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "file:///app/storage/mlruns"]
+    ports:
+      - "5055:5000"
+    volumes:
+      - storage_data:/app/storage
 
   postgres:
     image: postgres:16-alpine
@@ -38,3 +61,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  storage_data:

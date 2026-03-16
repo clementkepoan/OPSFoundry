@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.workflows.validation_models import AnomalyFlag, ValidationResult
+
 
 class WorkflowMetadata(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -28,6 +30,34 @@ class BaseWorkflow(ABC):
 
     @abstractmethod
     def step_pipeline(self) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def output_schema_model(self) -> type[BaseModel]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def extraction_system_prompt(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def fallback_extract(self, document_text: str) -> BaseModel:
+        raise NotImplementedError
+
+    @abstractmethod
+    def validate_extracted_payload(self, extracted_model: BaseModel) -> list[ValidationResult]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def detect_anomalies(
+        self,
+        extracted_model: BaseModel,
+        validation_results: list[ValidationResult],
+    ) -> list[AnomalyFlag]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def export_rows(self, extracted_model: BaseModel) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     def bootstrap_payload(self) -> dict[str, Any]:
