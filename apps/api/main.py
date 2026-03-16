@@ -7,7 +7,7 @@ from core.persistence.audit import SQLAuditRepository
 from core.runtime.audit import AuditService
 from core.config.settings import Settings, get_settings
 from core.persistence.session import build_engine, build_session_factory, init_database
-from core.documents.ocr import OCRService
+from core.documents.ocr import OCRProcessingError, OCRService
 from core.runtime.evaluation import EvaluationService
 from core.workflows.extraction import StructuredExtractionService
 from core.workflows.exports import ExportService
@@ -35,7 +35,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     session_factory = build_session_factory(db_engine)
     object_store = LocalObjectStore(active_settings.document_storage_dir)
     work_item_repository = SQLWorkItemRepository(session_factory=session_factory)
-    ocr_service = OCRService()
+    ocr_service = OCRService(
+        google_application_credentials=active_settings.google_application_credentials,
+        max_pdf_pages=active_settings.ocr_pdf_max_pages,
+    )
+    if active_settings.ocr_warmup_on_startup:
+        warmup_result = ocr_service.warmup()
+        if warmup_result.status != "ready" and active_settings.ocr_warmup_strict:
+            detail = "; ".join(warmup_result.warnings) or "OCR warmup failed."
+            raise RuntimeError(detail)
     intake_service = DocumentIntakeService(
         object_store=object_store,
         work_item_repository=work_item_repository,
@@ -103,6 +111,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload={"backend": receipt.extraction.backend, "status": receipt.extraction.status},
         )
         return receipt
+
+    def persist_validation(request: Request, workflow, work_item):
+        updated_item, run = request.app.state.validation_service.validate_work_item(workflow, work_item)
+        request.app.state.work_item_repository.save(updated_item)
+        request.app.state.observability_service.record_workflow_event(
+            event_type="fields_validated",
+            workflow_name=workflow.metadata.name,
+            work_item=updated_item,
+            payload={
+                "status": run.status,
+                "validation_results": [result.model_dump(mode="json") for result in run.results],
+                "anomalies": [flag.model_dump(mode="json") for flag in run.anomalies],
+            },
+        )
+
+        artifact = None
+        response_item = updated_item
+        if run.status == "passed":
+            response_item, artifact = persist_export(
+                request=request,
+                workflow=workflow,
+                work_item=updated_item,
+                export_format="csv",
+                error_status=500,
+            )
+        return response_item, run, artifact
 
     def persist_export(
         request: Request,
@@ -208,12 +242,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload={"document_id": receipt.document.id, "ocr_backend": receipt.ocr.backend},
             )
             extraction_receipt = await persist_extraction(request, workflow, receipt.work_item)
+            validation = None
+            artifact = None
+            response_item = extraction_receipt.work_item
+            if extraction_receipt.extraction.status == "succeeded":
+                response_item, validation, artifact = persist_validation(
+                    request,
+                    workflow,
+                    extraction_receipt.work_item,
+                )
             return {
                 "document": receipt.document.model_dump(mode="json"),
                 "ocr": receipt.ocr.model_dump(mode="json"),
-                "work_item": extraction_receipt.work_item.model_dump(mode="json"),
+                "work_item": response_item.model_dump(mode="json"),
                 "extraction": extraction_receipt.extraction.model_dump(mode="json"),
+                "validation": validation.model_dump(mode="json") if validation else None,
+                "artifact": artifact.model_dump(mode="json") if artifact else None,
             }
+        except OCRProcessingError as exc:
+            request.app.state.request_guard.clear(request_key)
+            if exc.status == "backend_unavailable":
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception:
             request.app.state.request_guard.clear(request_key)
             raise
@@ -233,6 +283,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Unknown work item '{work_item_id}'") from exc
 
         return work_item.model_dump(mode="json")
+
+    @app.delete("/api/v1/work-items/{work_item_id}", tags=["work-items"])
+    def delete_work_item(work_item_id: str, request: Request) -> dict[str, object]:
+        try:
+            work_item = request.app.state.work_item_repository.get(work_item_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown work item '{work_item_id}'") from exc
+
+        request.app.state.work_item_repository.delete(work_item_id)
+
+        try:
+            document = request.app.state.object_store.get_document(work_item.document_id)
+            request.app.state.object_store.delete_document(document)
+        except KeyError:
+            pass
+
+        request.app.state.observability_service.record_workflow_event(
+            event_type="work_item_deleted",
+            workflow_name=work_item.workflow_name,
+            work_item=work_item,
+            payload={"deleted_document_id": work_item.document_id},
+        )
+        return {
+            "deleted_work_item_id": work_item_id,
+            "deleted_document_id": work_item.document_id,
+        }
 
     @app.post("/api/v1/work-items/{work_item_id}/extract", tags=["extract"])
     async def extract_work_item(work_item_id: str, request: Request) -> dict[str, object]:
@@ -272,28 +348,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         claim_request(request, request_key)
 
         try:
-            updated_item, run = request.app.state.validation_service.validate_work_item(workflow, work_item)
-            request.app.state.work_item_repository.save(updated_item)
-            request.app.state.observability_service.record_workflow_event(
-                event_type="fields_validated",
-                workflow_name=workflow.metadata.name,
-                work_item=updated_item,
-                payload={
-                    "status": run.status,
-                    "validation_results": [result.model_dump(mode="json") for result in run.results],
-                    "anomalies": [flag.model_dump(mode="json") for flag in run.anomalies],
-                },
+            response_item, run, artifact = persist_validation(
+                request=request,
+                workflow=workflow,
+                work_item=work_item,
             )
-            artifact = None
-            response_item = updated_item
-            if run.status == "passed":
-                response_item, artifact = persist_export(
-                    request=request,
-                    workflow=workflow,
-                    work_item=updated_item,
-                    export_format="csv",
-                    error_status=500,
-                )
             return {
                 "work_item": response_item.model_dump(mode="json"),
                 "validation": run.model_dump(mode="json"),
@@ -400,6 +459,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             request.app.state.request_guard.clear(request_key)
             raise
+
+    @app.get("/api/v1/workflows/{workflow_name}/exports/csv/download", tags=["exports"])
+    def download_workflow_csv_export(workflow_name: str, request: Request) -> FileResponse:
+        try:
+            request.app.state.registry.get(workflow_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown workflow '{workflow_name}'") from exc
+
+        path = request.app.state.export_service.workflow_csv_path(workflow_name)
+        if not path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No CSV export has been generated yet for workflow '{workflow_name}'.",
+            )
+
+        return FileResponse(
+            path,
+            media_type="text/csv",
+            filename=path.name,
+        )
 
     @app.get("/api/v1/work-items/{work_item_id}/audit", tags=["audit"])
     def get_work_item_audit(work_item_id: str, request: Request) -> list[dict[str, object]]:

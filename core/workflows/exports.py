@@ -38,15 +38,28 @@ class ExportService:
         workflow_dir.mkdir(parents=True, exist_ok=True)
 
         if export_format == "csv":
-            filename = f"{work_item.id}.csv"
+            filename = self.workflow_csv_filename(workflow.metadata.name)
             path = workflow_dir / filename
             rows = workflow.export_rows(extracted_model)
             if not rows:
                 raise ValueError("Workflow export produced no rows.")
-            with path.open("w", encoding="utf-8", newline="") as export_file:
-                writer = csv.DictWriter(export_file, fieldnames=list(rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(rows)
+            exported_at = datetime.now(UTC).isoformat()
+            enriched_rows = [
+                {
+                    "work_item_id": work_item.id,
+                    "source_filename": work_item.filename,
+                    "exported_at": exported_at,
+                    **row,
+                }
+                for row in rows
+            ]
+            fieldnames = list(enriched_rows[0].keys())
+            file_exists = path.exists() and path.stat().st_size > 0
+            with path.open("a", encoding="utf-8", newline="") as export_file:
+                writer = csv.DictWriter(export_file, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerows(enriched_rows)
         elif export_format == "json":
             filename = f"{work_item.id}.json"
             path = workflow_dir / filename
@@ -74,3 +87,10 @@ class ExportService:
             }
         )
         return updated_item, artifact
+
+    def workflow_csv_path(self, workflow_name: str) -> Path:
+        return self.root_dir / workflow_name / self.workflow_csv_filename(workflow_name)
+
+    @staticmethod
+    def workflow_csv_filename(workflow_name: str) -> str:
+        return f"{workflow_name}_portfolio.csv"

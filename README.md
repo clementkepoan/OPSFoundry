@@ -1,112 +1,91 @@
 # OPSFoundry
 
-OPSFoundry is a modular AI operations platform for business workflow automation.
+OPSFoundry is a modular workflow automation platform. The current implemented workflow is `invoice_autoposting`, with reusable core services for intake, OCR, extraction, validation, review, export, and observability.
 
-The initial workflow is `invoice_autoposting`, but the platform is structured so new workflows can be added under `workflows/` without changing the core orchestration or API layers.
+## Current Stack
 
-## Day 1 Scope
-
-This repository currently includes:
-
-- Docker-based local stack scaffold
-- FastAPI application skeleton
-- LangChain and DeepSeek environment wiring
-- Dynamic workflow registry
-- Initial `invoice_autoposting` plugin contract
-- Upload intake flow with file-backed document and work item storage
-- Tesseract OCR for images and PDFs in Docker, plus text-native parsing for plain-text files
-- Structured invoice extraction with DeepSeek or deterministic fallback parsing
-- Validation, anomaly detection, review queue, CSV/JSON export, and audit logging
-- MLflow-ready observability and eval-set execution
-- Postgres-backed persistence for work items and audit events
+- API: FastAPI (`apps/api`)
+- Frontend: Next.js (`apps/frontend`)
+- OCR: Google Cloud Vision API (plus plain-text passthrough for `text/*`)
+- LLM extraction: DeepSeek (with deterministic fallback parser)
+- Persistence: Postgres for work items/audit, Redis for duplicate-request guard
+- Artifacts: local file storage under `storage/` (documents, exports, MLflow runs)
+- Tracking: MLflow UI
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env`.
-2. Build and start the stack:
-
+1. Copy environment file:
+```bash
+cp .env.example .env
+```
+2. Configure OCR credentials (see `OCR Setup` below).
+3. Start everything:
 ```bash
 docker compose up --build
 ```
+4. Open:
+- Frontend: `http://localhost:3000`
+- API docs: `http://localhost:8000/docs`
+- MLflow: `http://localhost:5055`
 
-3. Open the frontend at `http://localhost:3000`.
-4. Open the API docs at `http://localhost:8000/docs`.
-5. Open MLflow UI at `http://localhost:5055` if you start the full compose stack.
+## Main API Flow (Invoice)
 
-Example upload:
-
+- Upload (auto-runs extraction):
 ```bash
 curl -X POST http://localhost:8000/api/v1/workflows/invoice_autoposting/documents \
-  -F "file=@sample.txt;type=text/plain"
+  -F "file=@sample.png;type=image/png"
 ```
-
-The Next.js frontend lives in `apps/frontend/` and connects to the API with `NEXT_PUBLIC_API_BASE_URL`.
-
-Run extraction for a work item:
-
+- Validate (auto-exports CSV when validation passes):
 ```bash
-curl -X POST http://localhost:8000/api/v1/work-items/<work-item-id>/extract
+curl -X POST http://localhost:8000/api/v1/work-items/<work_item_id>/validate
 ```
-
-Validate, review, and export:
-
+- Review queue + decision for failed validation:
 ```bash
-curl -X POST http://localhost:8000/api/v1/work-items/<work-item-id>/validate
 curl http://localhost:8000/api/v1/review-queue
-curl -X POST http://localhost:8000/api/v1/work-items/<work-item-id>/review \
+curl -X POST http://localhost:8000/api/v1/work-items/<work_item_id>/review \
   -H "Content-Type: application/json" \
-  -d '{"action":"approve","review_notes":"Reviewed and approved"}'
-curl -X POST "http://localhost:8000/api/v1/work-items/<work-item-id>/export?export_format=csv"
+  -d '{"action":"approve","review_notes":"manual review complete"}'
 ```
 
-Observability and evals:
+## Development and Tests
 
+- Run tests locally:
 ```bash
-curl http://localhost:8000/api/v1/observability/status
-curl -X POST "http://localhost:8000/api/v1/evals/invoice_autoposting/run?mode=fallback"
+pytest -q
+```
+- Run tests inside Docker API container:
+```bash
+docker compose run --rm api pytest -q
 ```
 
-## Project Structure
+## Repository Layout
 
 ```text
-apps/
-  api/
-core/
-  audit/
-  config/
-  document_processing/
-  evaluation/
-  exports/
-  intake/
-  observability/
-  orchestration/
-  review_engine/
-  storage/
-  validation/
-  work_items/
-  workflow_registry/
-workflows/
-  invoice_autoposting/
-mcp_servers/
-  coa_tool/
-mlops/
-  eval_sets/
-storage/
-  audit/
-  documents/
-  exports/
-  mlruns/
-  work_items/
+apps/                 # API + Next.js frontend
+core/                 # shared domain, runtime, workflows, persistence, documents
+workflows/            # workflow configs (invoice_autoposting)
+mlops/eval_sets/      # evaluation datasets
+mcp_servers/          # optional MCP integrations
+tests/                # backend tests
+storage/              # local runtime artifacts
 ```
 
-Operational workflow state now persists in Postgres by default for work items and audit events. Raw documents, exports, and MLflow artifacts remain file-backed under `storage/`.
+## OCR Setup Note
 
-## Planned Delivery Sequence
+1. Put your GCP service-account key JSON under `secrets/` (any filename is fine).
+2. Set `.env` to the in-container path that matches your filename:
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/<your-key-file>.json
+OCR_PDF_MAX_PAGES=5
+```
+`docker-compose.yml` mounts `./secrets` into `/app/secrets` (read-only) for the API service.
 
-- Day 1: scaffold platform and registry
-- Day 2: upload system and work item model
-- Day 3: extraction agent and DeepSeek structured outputs
-- Day 4: validators, anomalies, review queue
-- Day 5: exports and audit logging
-- Day 6: MLflow tracking and evaluation
-- Day 7: demo data, UI polish, end-to-end testing
+## Database Configuration
+
+- In Docker Compose, `DATABASE_URL` is optional. The app automatically builds it from:
+  `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`.
+- If you prefer explicit config, use:
+```bash
+DATABASE_URL=postgresql+psycopg://opsfoundry:opsfoundry@postgres:5432/opsfoundry
+```
+- Inside containers, use host `postgres` (service name), not `localhost`.

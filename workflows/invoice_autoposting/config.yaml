@@ -4,8 +4,10 @@ version: 0.1.0
 
 states:
   - uploaded
+  - ocr_failed
   - parsed
   - extracted
+  - extraction_failed
   - validated
   - needs_review
   - approved

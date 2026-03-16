@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from typing import BinaryIO, Protocol
 
-from core.documents.ocr import OCRResult, OCRService
+from core.documents.ocr import OCRProcessingError, OCRResult, OCRService, OCR_SUCCESS_STATUSES
 from core.documents.storage import LocalObjectStore, StoredDocument
 from core.domain.work_items import WorkItem
 
@@ -48,6 +48,12 @@ class DocumentIntakeService:
                 on_chunk=ocr_consumer.consume,
             )
             ocr_result = ocr_consumer.finalize(self.object_store.resolve_path(document))
+            if ocr_result.status not in OCR_SUCCESS_STATUSES:
+                raise OCRProcessingError(
+                    backend=ocr_result.backend,
+                    status=ocr_result.status,
+                    warnings=ocr_result.warnings,
+                )
             work_item = WorkItem.from_document(
                 workflow_name=workflow_name,
                 initial_state=initial_state,

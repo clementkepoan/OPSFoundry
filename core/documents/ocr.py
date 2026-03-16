@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 import codecs
+from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
-import subprocess
-import tempfile
 
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,18 @@ class OCRResult(BaseModel):
     status: str
     extracted_text: str = ""
     warnings: list[str] = Field(default_factory=list)
+
+
+OCR_SUCCESS_STATUSES = {"text_extracted", "ocr_completed"}
+
+
+class OCRProcessingError(RuntimeError):
+    def __init__(self, backend: str, status: str, warnings: list[str]) -> None:
+        detail = "; ".join(warnings) if warnings else "OCR failed without additional details."
+        super().__init__(f"OCR failed ({backend}, {status}): {detail}")
+        self.backend = backend
+        self.status = status
+        self.warnings = warnings
 
 
 class OCRBackend(ABC):
@@ -96,9 +108,16 @@ class NullOCRConsumer(OCRConsumer):
         )
 
 
-class TesseractOCRConsumer(OCRConsumer):
-    def __init__(self, content_type: str) -> None:
+class GoogleVisionOCRConsumer(OCRConsumer):
+    def __init__(
+        self,
+        content_type: str,
+        google_application_credentials: Path | None,
+        max_pdf_pages: int,
+    ) -> None:
         self.content_type = content_type
+        self.google_application_credentials = google_application_credentials
+        self.max_pdf_pages = max_pdf_pages
 
     def consume(self, chunk: bytes) -> None:
         return None
@@ -106,83 +125,117 @@ class TesseractOCRConsumer(OCRConsumer):
     def finalize(self, document_path: Path | None = None) -> OCRResult:
         if document_path is None:
             return OCRResult(
-                backend="tesseract",
+                backend="google_vision",
                 status="backend_unavailable",
-                warnings=["Document path is required for Tesseract OCR."],
+                warnings=["Document path is required for Google Cloud Vision OCR."],
             )
 
         try:
             if self.content_type in PDF_CONTENT_TYPES:
-                text = self._extract_pdf(document_path)
+                text, warnings, successful_pages = self._extract_pdf(document_path)
             else:
-                text = self._extract_image(document_path)
+                text, warnings, successful_pages = self._extract_image(document_path)
         except ImportError as exc:
             return OCRResult(
-                backend="tesseract",
+                backend="google_vision",
                 status="backend_unavailable",
-                warnings=[f"Tesseract OCR dependencies are not installed: {exc}"],
+                warnings=[f"Google Cloud Vision dependencies are not installed: {exc}"],
             )
         except FileNotFoundError as exc:
             return OCRResult(
-                backend="tesseract",
+                backend="google_vision",
                 status="backend_unavailable",
                 warnings=[str(exc)],
             )
-        except subprocess.CalledProcessError as exc:
-            detail = exc.stderr.strip() if exc.stderr else "tesseract command failed"
-            return OCRResult(
-                backend="tesseract",
-                status="ocr_failed",
-                warnings=[detail],
-            )
         except Exception as exc:
             return OCRResult(
-                backend="tesseract",
+                backend="google_vision",
                 status="ocr_failed",
-                warnings=[f"Tesseract OCR could not process the document: {exc}"],
+                warnings=[f"Google Cloud Vision OCR could not process the document: {exc}"],
             )
 
-        warnings: list[str] = []
         if not text.strip():
-            warnings.append("Tesseract completed but did not extract any text.")
+            warnings.append("Google Cloud Vision OCR completed but did not extract any text.")
+
+        status = "ocr_completed" if successful_pages > 0 else "ocr_failed"
 
         return OCRResult(
-            backend="tesseract",
-            status="ocr_completed",
+            backend="google_vision",
+            status=status,
             extracted_text=text,
             warnings=warnings,
         )
 
-    def _extract_image(self, document_path: Path) -> str:
-        from PIL import Image, ImageOps
+    def _extract_image(self, document_path: Path) -> tuple[str, list[str], int]:
+        from PIL import Image
 
         with Image.open(document_path) as image:
-            prepared = ImageOps.exif_transpose(image).convert("RGB")
-            return self._run_tesseract_on_image(prepared)
+            prepared = image.convert("RGB")
+            image_bytes = BytesIO()
+            prepared.save(image_bytes, format="PNG")
+        text, warning = self._extract_text_from_bytes(image_bytes.getvalue())
+        warnings: list[str] = [warning] if warning else []
+        successful_pages = 1 if warning is None else 0
+        return text, warnings, successful_pages
 
-    def _extract_pdf(self, document_path: Path) -> str:
+    def _extract_pdf(self, document_path: Path) -> tuple[str, list[str], int]:
         import pypdfium2 as pdfium
 
         pdf = pdfium.PdfDocument(str(document_path))
         pages: list[str] = []
-        for page_index in range(len(pdf)):
-            page = pdf[page_index]
-            rendered = page.render(scale=2.0).to_pil()
-            pages.append(self._run_tesseract_on_image(rendered.convert("RGB")))
+        warnings: list[str] = []
+        successful_pages = 0
+        try:
+            page_count = min(len(pdf), self.max_pdf_pages)
+            for page_index in range(page_count):
+                page = pdf[page_index]
+                rendered = page.render(scale=2.0).to_pil().convert("RGB")
+                image_bytes = BytesIO()
+                rendered.save(image_bytes, format="PNG")
+                text, warning = self._extract_text_from_bytes(image_bytes.getvalue())
+                if warning:
+                    warnings.append(f"Page {page_index + 1}: {warning}")
+                else:
+                    successful_pages += 1
+                if text.strip():
+                    pages.append(text.strip())
+            if len(pdf) > self.max_pdf_pages:
+                warnings.append(
+                    f"Only first {self.max_pdf_pages} pages were processed for OCR."
+                )
+        finally:
+            pdf.close()
 
-        return "\n\n".join(segment.strip() for segment in pages if segment.strip())
+        return "\n\n".join(pages), warnings, successful_pages
 
     @staticmethod
-    def _run_tesseract_on_image(image) -> str:
-        with tempfile.NamedTemporaryFile(suffix=".png") as image_file:
-            image.save(image_file.name, format="PNG")
-            completed = subprocess.run(
-                ["tesseract", image_file.name, "stdout", "--psm", "6"],
-                check=True,
-                capture_output=True,
-                text=True,
+    @lru_cache(maxsize=4)
+    def _get_client(credentials_path: str | None):
+        from google.cloud import vision
+
+        if credentials_path:
+            from google.oauth2 import service_account
+
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path
             )
-        return completed.stdout.strip()
+            return vision.ImageAnnotatorClient(credentials=credentials)
+        return vision.ImageAnnotatorClient()
+
+    def _extract_text_from_bytes(self, content: bytes) -> tuple[str, str | None]:
+        from google.cloud import vision
+
+        credentials_path = (
+            str(self.google_application_credentials)
+            if self.google_application_credentials is not None
+            else None
+        )
+        client = self._get_client(credentials_path)
+        response = client.document_text_detection(image=vision.Image(content=content))
+        if response.error.message:
+            return "", response.error.message
+        text = response.full_text_annotation.text if response.full_text_annotation else ""
+        return text, None
 
 
 class NullOCRBackend(OCRBackend):
@@ -195,22 +248,68 @@ class NullOCRBackend(OCRBackend):
         return NullOCRConsumer(content_type)
 
 
-class TesseractOCRBackend(OCRBackend):
-    name = "tesseract"
+class GoogleVisionOCRBackend(OCRBackend):
+    name = "google_vision"
+
+    def __init__(
+        self,
+        google_application_credentials: Path | None,
+        max_pdf_pages: int,
+    ) -> None:
+        self.google_application_credentials = google_application_credentials
+        self.max_pdf_pages = max_pdf_pages
 
     def supports(self, content_type: str) -> bool:
         return content_type in IMAGE_CONTENT_TYPES or content_type in PDF_CONTENT_TYPES
 
     def create_consumer(self, content_type: str) -> OCRConsumer:
-        return TesseractOCRConsumer(content_type)
+        return GoogleVisionOCRConsumer(
+            content_type=content_type,
+            google_application_credentials=self.google_application_credentials,
+            max_pdf_pages=self.max_pdf_pages,
+        )
 
 
 class OCRService:
-    def __init__(self, backends: list[OCRBackend] | None = None) -> None:
-        self.backends = backends or [PlainTextOCRBackend(), TesseractOCRBackend(), NullOCRBackend()]
+    def __init__(
+        self,
+        backends: list[OCRBackend] | None = None,
+        google_application_credentials: Path | None = None,
+        max_pdf_pages: int = 5,
+    ) -> None:
+        self.google_application_credentials = google_application_credentials
+        self.backends = backends or [
+            PlainTextOCRBackend(),
+            GoogleVisionOCRBackend(
+                google_application_credentials=google_application_credentials,
+                max_pdf_pages=max_pdf_pages,
+            ),
+            NullOCRBackend(),
+        ]
 
     def create_consumer(self, content_type: str) -> OCRConsumer:
         backend = next(
             candidate for candidate in self.backends if candidate.supports(content_type)
         )
         return backend.create_consumer(content_type)
+
+    def warmup(self) -> OCRResult:
+        try:
+            credentials_path = (
+                str(self.google_application_credentials)
+                if self.google_application_credentials is not None
+                else None
+            )
+            GoogleVisionOCRConsumer._get_client(credentials_path)
+        except Exception as exc:  # pragma: no cover - exercised by runtime env failures
+            return OCRResult(
+                backend="google_vision",
+                status="backend_unavailable",
+                warnings=[f"Google Cloud Vision warmup failed: {exc}"],
+            )
+
+        return OCRResult(
+            backend="google_vision",
+            status="ready",
+            warnings=[],
+        )

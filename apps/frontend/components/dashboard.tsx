@@ -2,7 +2,7 @@
 
 import { ChangeEvent, FormEvent, startTransition, useEffect, useMemo, useState } from "react";
 
-import { API_BASE_URL, apiGet, apiPost } from "../lib/api";
+import { API_BASE_URL, apiDelete, apiGet, apiPost } from "../lib/api";
 import styles from "./dashboard.module.css";
 
 type WorkflowMetadata = {
@@ -38,7 +38,9 @@ type WorkItem = {
   id: string;
   workflow_name: string;
   state: string;
+  document_id: string;
   filename: string;
+  content_type: string;
   created_at: string;
   updated_at: string;
   review_status: string;
@@ -51,6 +53,7 @@ type WorkItem = {
   ocr_backend?: string | null;
   exported_artifact?: ExportArtifact | null;
   extracted_data?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
   validation_results: ValidationResult[];
   anomaly_flags: AnomalyFlag[];
 };
@@ -76,6 +79,12 @@ type UploadReceipt = {
     status: string;
     backend: string;
   };
+  validation?: {
+    status: string;
+    results: ValidationResult[];
+    anomalies: AnomalyFlag[];
+  } | null;
+  artifact?: ExportArtifact | null;
 };
 
 type ValidationResponse = {
@@ -91,6 +100,11 @@ type ValidationResponse = {
 type ReviewResponse = {
   work_item: WorkItem;
   artifact: ExportArtifact | null;
+};
+
+type DeleteResponse = {
+  deleted_work_item_id: string;
+  deleted_document_id: string;
 };
 
 type ActionOutcome = {
@@ -162,6 +176,9 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Loading workflow HUD...");
+  const [reviewNotes, setReviewNotes] = useState("");
+  const [editedDataText, setEditedDataText] = useState("{}");
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const selectedItem = useMemo(
     () => workItems.find((item) => item.id === selectedId) ?? reviewQueue.find((item) => item.id === selectedId) ?? null,
@@ -213,6 +230,16 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
     );
   }, [selectedId]);
 
+  useEffect(() => {
+    if (!selectedItem) {
+      setReviewNotes("");
+      setEditedDataText("{}");
+      return;
+    }
+    setReviewNotes(selectedItem.review_notes ?? "");
+    setEditedDataText(JSON.stringify(selectedItem.extracted_data ?? {}, null, 2));
+  }, [selectedItem?.id]);
+
   async function performAction<T>(
     label: string,
     action: () => Promise<T>,
@@ -258,12 +285,17 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
         ),
       (receipt) => {
         setSelectedFile(null);
+        const validationStatus = receipt.validation?.status;
         return {
           focusId: receipt.work_item.id,
           message:
-            receipt.extraction.status === "succeeded"
-              ? `Uploaded and extracted ${selectedFile.name}. Validate to route it.`
-              : `Uploaded ${selectedFile.name}, but extraction needs attention.`,
+            receipt.extraction.status !== "succeeded"
+              ? `Uploaded ${selectedFile.name}, but extraction needs attention.`
+              : validationStatus === "passed"
+                ? `Uploaded, extracted, validated, and exported ${selectedFile.name}.`
+                : validationStatus === "needs_review"
+                  ? `Uploaded and routed ${selectedFile.name} to review queue.`
+                  : `Uploaded and extracted ${selectedFile.name}.`,
         };
       },
     );
@@ -306,15 +338,22 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
 
   async function handleReview(action: "approve" | "reject") {
     if (!selectedItem) return;
+    let updatedData: Record<string, unknown> | undefined;
+    if (action === "approve") {
+      try {
+        updatedData = JSON.parse(editedDataText) as Record<string, unknown>;
+      } catch {
+        setStatusMessage("Edited payload is not valid JSON.");
+        return;
+      }
+    }
     await performAction<ReviewResponse>(
       `${action === "approve" ? "Approving" : "Rejecting"} ${selectedItem.filename}`,
       () =>
         apiPost<ReviewResponse>(`/api/v1/work-items/${selectedItem.id}/review`, {
           action,
-          review_notes:
-            action === "approve"
-              ? "Approved from the operations console."
-              : "Rejected from the operations console.",
+          review_notes: reviewNotes || undefined,
+          updated_data: action === "approve" ? updatedData : undefined,
         }, idempotencyHeader(`review:${action}:${selectedItem.id}`)),
       (response) => ({
         message:
@@ -323,6 +362,26 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
             : "Work item rejected.",
       }),
       selectedItem.id,
+    );
+  }
+
+  async function handleDeleteWorkItem(workItemId: string) {
+    await performAction<DeleteResponse>(
+      `Deleting work item ${workItemId.slice(0, 8)}`,
+      () => apiDelete<DeleteResponse>(`/api/v1/work-items/${workItemId}`),
+      () => ({
+        focusId: null,
+        message: "Work item deleted from portfolio.",
+      }),
+      null,
+    );
+  }
+
+  function handleDownloadWorkflowCsv() {
+    window.open(
+      `${API_BASE_URL}/api/v1/workflows/${encodeURIComponent(workflowName)}/exports/csv/download`,
+      "_blank",
+      "noopener,noreferrer",
     );
   }
 
@@ -386,7 +445,76 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
       </section>
 
       <section className={styles.layout}>
-        <div className={styles.sidebar}>
+        <article className={`${styles.panel} ${styles.portfolioPanel}`}>
+          <div className={styles.sectionHeader}>
+            <div>
+              <p className={styles.eyebrow}>Portfolio</p>
+              <h2>Work item ledger</h2>
+            </div>
+            <div className={styles.headerActions}>
+              <button type="button" className={styles.secondaryButton} onClick={() => void refreshAll(selectedId)}>
+                Refresh
+              </button>
+              <button type="button" className={styles.secondaryButton} onClick={handleDownloadWorkflowCsv}>
+                Download CSV
+              </button>
+            </div>
+          </div>
+          <div className={styles.ledger}>
+            {workItems.length === 0 ? (
+              <p className={styles.emptyState}>No work items for this workflow yet.</p>
+            ) : (
+              workItems.map((item) => (
+                <article
+                  key={item.id}
+                  onClick={() => setSelectedId(item.id)}
+                  className={`${styles.ledgerCard} ${styles[itemTone(item)]} ${selectedId === item.id ? styles.activeCard : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedId(item.id);
+                    }
+                  }}
+                >
+                  <div className={styles.ledgerTop}>
+                    <div>
+                      <strong>{item.filename}</strong>
+                      <span>{item.id.slice(0, 8)} · {item.workflow_name}</span>
+                    </div>
+                    <div className={styles.ledgerActions}>
+                      <span className={styles.stateChip}>{humanizeStatus(item.state)}</span>
+                      <button
+                        type="button"
+                        className={styles.deleteButton}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDeleteWorkItem(item.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <div className={styles.ledgerMeta}>
+                    <span>OCR: {humanizeStatus(item.ocr_backend)}</span>
+                    <span>Extraction: {humanizeStatus(item.extraction_status)}</span>
+                    <span>Validation: {humanizeStatus(item.validation_status)}</span>
+                    <span>Review: {humanizeStatus(item.review_status)}</span>
+                  </div>
+                  <div className={styles.ledgerFooter}>
+                    <span>{nextAction(item)}</span>
+                    <small>{formatTimestamp(item.updated_at)}</small>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </article>
+
+        <div className={styles.lowerGrid}>
+          <div className={styles.column}>
           <article className={styles.panel}>
             <div className={styles.sectionHeader}>
               <div>
@@ -445,55 +573,8 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
               )}
             </div>
           </article>
-        </div>
-
-        <section className={styles.workspace}>
-          <article className={styles.panel}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.eyebrow}>Portfolio</p>
-                <h2>Work item ledger</h2>
-              </div>
-              <button type="button" className={styles.secondaryButton} onClick={() => void refreshAll(selectedId)}>
-                Refresh
-              </button>
-            </div>
-            <div className={styles.ledger}>
-              {workItems.length === 0 ? (
-                <p className={styles.emptyState}>No work items for this workflow yet.</p>
-              ) : (
-                workItems.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setSelectedId(item.id)}
-                    className={`${styles.ledgerCard} ${styles[itemTone(item)]} ${selectedId === item.id ? styles.activeCard : ""}`}
-                  >
-                    <div className={styles.ledgerTop}>
-                      <div>
-                        <strong>{item.filename}</strong>
-                        <span>{item.id.slice(0, 8)} · {item.workflow_name}</span>
-                      </div>
-                      <span className={styles.stateChip}>{humanizeStatus(item.state)}</span>
-                    </div>
-                    <div className={styles.ledgerMeta}>
-                      <span>OCR: {humanizeStatus(item.ocr_backend)}</span>
-                      <span>Extraction: {humanizeStatus(item.extraction_status)}</span>
-                      <span>Validation: {humanizeStatus(item.validation_status)}</span>
-                      <span>Review: {humanizeStatus(item.review_status)}</span>
-                    </div>
-                    <div className={styles.ledgerFooter}>
-                      <span>{nextAction(item)}</span>
-                      <small>{formatTimestamp(item.updated_at)}</small>
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </article>
-        </section>
-
-        <aside className={styles.detailRail}>
+          </div>
+          <div className={styles.column}>
           <article className={styles.panel}>
             <div className={styles.sectionHeader}>
               <div>
@@ -536,7 +617,7 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                       Re-run extraction
                     </button>
                   ) : null}
-                  {selectedItem.extraction_status === "succeeded" && selectedItem.validation_status !== "passed" && selectedItem.review_status !== "queued" && selectedItem.state !== "needs_review" ? (
+                  {selectedItem.extraction_status === "succeeded" && selectedItem.validation_status === "pending" ? (
                     <button type="button" disabled={busy} onClick={() => void handleValidate()}>
                       Validate and auto-export
                     </button>
@@ -552,6 +633,16 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                     </>
                   ) : null}
                 </div>
+
+                <section className={styles.infoBlock}>
+                  <div className={styles.blockHeader}>
+                    <h3>Source document</h3>
+                    <button type="button" className={styles.secondaryButton} onClick={() => setPreviewOpen(true)}>
+                      Preview
+                    </button>
+                  </div>
+                  <p>{selectedItem.filename}</p>
+                </section>
 
                 {selectedItem.exported_artifact ? (
                   <section className={styles.infoBlock}>
@@ -580,12 +671,50 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                   </section>
                 ) : null}
 
+                {(selectedItem.review_status === "queued" || selectedItem.state === "needs_review") ? (
+                  <section className={styles.infoBlock}>
+                    <div className={styles.blockHeader}>
+                      <h3>Manual review editor</h3>
+                      <span>editable</span>
+                    </div>
+                    <label className={styles.reviewLabel}>
+                      Review notes
+                      <textarea
+                        className={styles.reviewTextarea}
+                        value={reviewNotes}
+                        onChange={(event) => setReviewNotes(event.target.value)}
+                        placeholder="Explain what was corrected or why this is approved."
+                      />
+                    </label>
+                    <label className={styles.reviewLabel}>
+                      Extracted payload (JSON)
+                      <textarea
+                        className={styles.jsonEditor}
+                        value={editedDataText}
+                        onChange={(event) => setEditedDataText(event.target.value)}
+                      />
+                    </label>
+                  </section>
+                ) : null}
+
                 <section className={styles.infoBlock}>
                   <div className={styles.blockHeader}>
                     <h3>Structured payload</h3>
                     <span>{humanizeStatus(selectedItem.extraction_backend)}</span>
                   </div>
                   <pre>{JSON.stringify(selectedItem.extracted_data ?? {}, null, 2)}</pre>
+                </section>
+
+                <section className={styles.infoBlock}>
+                  <div className={styles.blockHeader}>
+                    <h3>LLM feedback</h3>
+                    <span>{humanizeStatus(selectedItem.extraction_backend)}</span>
+                  </div>
+                  <p>
+                    {typeof selectedItem.extracted_data?.explanation === "string" && selectedItem.extracted_data.explanation
+                      ? selectedItem.extracted_data.explanation
+                      : "No explanation returned by extraction backend."}
+                  </p>
                 </section>
 
                 <section className={styles.infoBlock}>
@@ -645,8 +774,35 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
               <p className={styles.emptyState}>Observability status unavailable.</p>
             )}
           </article>
-        </aside>
+          </div>
+        </div>
       </section>
+
+      {previewOpen && selectedItem ? (
+        <div className={styles.previewOverlay} onClick={() => setPreviewOpen(false)}>
+          <div className={styles.previewModal} onClick={(event) => event.stopPropagation()}>
+            <div className={styles.blockHeader}>
+              <h3>{selectedItem.filename}</h3>
+              <button type="button" className={styles.secondaryButton} onClick={() => setPreviewOpen(false)}>
+                Close
+              </button>
+            </div>
+            {selectedItem.content_type.startsWith("image/") ? (
+              <img
+                src={`${API_BASE_URL}/api/v1/documents/${selectedItem.document_id}/download`}
+                alt={selectedItem.filename}
+                className={styles.previewImage}
+              />
+            ) : (
+              <iframe
+                src={`${API_BASE_URL}/api/v1/documents/${selectedItem.document_id}/download`}
+                title={selectedItem.filename}
+                className={styles.previewFrame}
+              />
+            )}
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

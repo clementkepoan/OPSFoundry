@@ -47,6 +47,8 @@ class WorkItem(BaseModel):
         ocr_result: OCRResult,
         metadata: dict[str, Any] | None = None,
     ) -> "WorkItem":
+        metadata_payload = dict(metadata or {})
+        metadata_payload["ocr_warnings"] = list(ocr_result.warnings)
         return cls(
             workflow_name=workflow_name,
             state=initial_state,
@@ -59,5 +61,5 @@ class WorkItem(BaseModel):
             ocr_backend=ocr_result.backend,
             ocr_text=ocr_result.extracted_text or None,
             ocr_text_preview=ocr_result.extracted_text[:500] or None,
-            metadata=metadata or {},
+            metadata=metadata_payload,
         )

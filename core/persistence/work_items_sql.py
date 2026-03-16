@@ -46,3 +46,11 @@ class SQLWorkItemRepository:
                 statement = statement.where(WorkItemRecord.workflow_name == workflow_name)
             records = session.scalars(statement).all()
             return [WorkItem.model_validate(record.payload) for record in records]
+
+    def delete(self, work_item_id: str) -> None:
+        with self.session_factory() as session:
+            record = session.get(WorkItemRecord, work_item_id)
+            if record is None:
+                raise KeyError(f"Unknown work item '{work_item_id}'")
+            session.delete(record)
+            session.commit()

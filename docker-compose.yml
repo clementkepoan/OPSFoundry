@@ -23,6 +23,7 @@ services:
         condition: service_started
     volumes:
       - storage_data:/app/storage
+      - ./secrets:/app/secrets:ro
 
   mlflow:
     build:

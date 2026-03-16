@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
     duplicate_request_ttl_seconds: int = 15
+    google_application_credentials: Path | None = None
+    ocr_pdf_max_pages: int = 5
+    ocr_warmup_on_startup: bool = False
+    ocr_warmup_strict: bool = False
     storage_root: Path = Path("storage")
     database_url: str | None = None
     mlflow_tracking_uri: str | None = None

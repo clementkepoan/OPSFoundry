@@ -212,6 +212,8 @@ storage/work_items/*
 !storage/work_items/.gitkeep
 apps/frontend/node_modules/
 apps/frontend/.next/
+secrets/*
+!secrets/.gitkeep
 .cursorignore
 .cursorindexingignore
 

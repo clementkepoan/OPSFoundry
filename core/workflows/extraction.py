@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from core.documents.ocr import OCR_SUCCESS_STATUSES
 from core.runtime.engine import LangChainWorkflowEngine
 from core.domain.work_items import WorkItem
 from core.workflows.base import BaseWorkflow
@@ -35,8 +36,10 @@ class StructuredExtractionService:
         warnings: list[str] = []
 
         if not document_text:
+            failed_state = "ocr_failed" if work_item.ocr_status not in OCR_SUCCESS_STATUSES else "extraction_failed"
             updated_item = work_item.model_copy(
                 update={
+                    "state": failed_state,
                     "extraction_status": "failed",
                     "extraction_error": "No OCR text is available for extraction.",
                     "updated_at": datetime.now(UTC),
@@ -73,6 +76,7 @@ class StructuredExtractionService:
             except Exception as exc:
                 updated_item = work_item.model_copy(
                     update={
+                        "state": "extraction_failed",
                         "extraction_status": "failed",
                         "extraction_backend": backend,
                         "extraction_error": str(exc),
