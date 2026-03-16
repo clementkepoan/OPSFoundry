@@ -1,0 +1,12 @@
+[
+  {
+    "document_id": "sample-invoice-001",
+    "workflow": "invoice_autoposting",
+    "expected_fields": {
+      "vendor_name": "Acme Office Supply",
+      "invoice_number": "INV-1001",
+      "currency": "USD",
+      "total_amount": "125.50"
+    }
+  }
+]

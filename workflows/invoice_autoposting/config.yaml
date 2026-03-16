@@ -1,0 +1,29 @@
+workflow_name: invoice_autoposting
+description: Extract and validate accounting data from invoices and receipts.
+version: 0.1.0
+
+states:
+  - uploaded
+  - parsed
+  - extracted
+  - validated
+  - needs_review
+  - approved
+  - rejected
+  - exported
+
+input_schema: document_upload
+output_schema: accounting_entry
+
+tools:
+  - chart_of_accounts
+  - vendor_lookup
+
+validators:
+  - totals_match
+  - required_fields_present
+  - valid_date
+
+exports:
+  - csv
+  - json

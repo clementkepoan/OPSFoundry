@@ -1,0 +1,40 @@
+services:
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-opsfoundry}
+      POSTGRES_USER: ${POSTGRES_USER:-opsfoundry}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opsfoundry}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opsfoundry} -d ${POSTGRES_DB:-opsfoundry}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
