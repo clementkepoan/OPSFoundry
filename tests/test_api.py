@@ -1,6 +1,33 @@
 from core.runtime.request_guard import build_upload_request_key, build_work_item_request_key
 
 
+DEFAULT_CATEGORY = "office_supplies"
+DEFAULT_FIELDS = (
+    "vendor_name,invoice_number,invoice_date,currency,subtotal,tax_amount,total_amount,payment_terms,line_items"
+)
+
+
+def upload_invoice(
+    client,
+    *,
+    filename: str,
+    payload: bytes,
+    content_type: str = "text/plain",
+    category: str = DEFAULT_CATEGORY,
+):
+    return client.post(
+        "/api/v1/workflows/invoice_autoposting/documents",
+        files={"file": (filename, payload, content_type)},
+        data={
+            "category": category,
+            "extract_fields": DEFAULT_FIELDS,
+            "include_line_items": "true",
+            "source_language": "auto",
+            "target_currency": "USD",
+        },
+    )
+
+
 def test_healthcheck_exposes_registered_workflows(client) -> None:
     response = client.get("/health")
 
@@ -21,10 +48,7 @@ def test_upload_creates_work_item_and_supports_download(client) -> None:
         b"Total: 125.50\n"
     )
 
-    response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", payload, "text/plain")},
-    )
+    response = upload_invoice(client, filename="invoice.txt", payload=payload)
 
     assert response.status_code == 201
     body = response.json()
@@ -33,7 +57,7 @@ def test_upload_creates_work_item_and_supports_download(client) -> None:
     assert body["work_item"]["ocr_text"].startswith("Acme Office Supply")
     assert body["work_item"]["state"] == "exported"
     assert body["validation"]["status"] == "passed"
-    assert body["artifact"]["filename"] == "invoice_autoposting_portfolio.csv"
+    assert body["artifact"]["filename"] == "invoice_autoposting_office_supplies_portfolio.csv"
     assert body["work_item"]["document_id"] == body["document"]["id"]
     assert body["extraction"]["status"] == "succeeded"
     assert body["work_item"]["extracted_data"]["invoice_number"] == "INV-1001"
@@ -49,9 +73,11 @@ def test_upload_creates_work_item_and_supports_download(client) -> None:
 
 
 def test_upload_rejects_binary_when_ocr_is_unavailable_or_fails(client) -> None:
-    response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.pdf", b"%PDF-1.4", "application/pdf")},
+    response = upload_invoice(
+        client,
+        filename="invoice.pdf",
+        payload=b"%PDF-1.4",
+        content_type="application/pdf",
     )
 
     assert response.status_code in {422, 503}
@@ -65,6 +91,7 @@ def test_duplicate_upload_request_returns_conflict(client) -> None:
     payload = b"Invoice INV-1001\nTotal: 125.50\n"
     request_key = build_upload_request_key(
         workflow_name="invoice_autoposting",
+        category=DEFAULT_CATEGORY,
         filename="invoice.txt",
         content_type="text/plain",
         size_bytes=len(payload),
@@ -77,6 +104,13 @@ def test_duplicate_upload_request_returns_conflict(client) -> None:
     response = client.post(
         "/api/v1/workflows/invoice_autoposting/documents",
         files={"file": ("invoice.txt", payload, "text/plain")},
+        data={
+            "category": DEFAULT_CATEGORY,
+            "extract_fields": DEFAULT_FIELDS,
+            "include_line_items": "true",
+            "source_language": "auto",
+            "target_currency": "USD",
+        },
     )
 
     assert response.status_code == 409
@@ -84,10 +118,7 @@ def test_duplicate_upload_request_returns_conflict(client) -> None:
 
 
 def test_download_returns_not_found_when_file_is_missing(client) -> None:
-    response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", b"hello", "text/plain")},
-    )
+    response = upload_invoice(client, filename="invoice.txt", payload=b"hello")
     document_id = response.json()["document"]["id"]
     object_key = response.json()["document"]["object_key"]
     (client.app.state.settings.document_storage_dir / object_key).unlink()
@@ -109,9 +140,10 @@ def test_extract_work_item_returns_structured_invoice_payload(client) -> None:
         "Total: 125.50\n"
         "Payment Terms: Net 30\n"
     )
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", invoice_text.encode("utf-8"), "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=invoice_text.encode("utf-8"),
     )
     work_item_id = upload_response.json()["work_item"]["id"]
 
@@ -137,9 +169,10 @@ def test_validate_passes_without_review_for_clean_invoice(client) -> None:
         "Tax: 5.50\n"
         "Total: 125.50\n"
     )
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", invoice_text.encode("utf-8"), "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=invoice_text.encode("utf-8"),
     )
     assert upload_response.status_code == 201
     body = upload_response.json()
@@ -148,13 +181,13 @@ def test_validate_passes_without_review_for_clean_invoice(client) -> None:
     assert body["work_item"]["state"] == "exported"
     assert body["work_item"]["review_status"] == "not_required"
     assert body["work_item"]["export_status"] == "completed"
-    assert body["artifact"]["filename"] == "invoice_autoposting_portfolio.csv"
+    assert body["artifact"]["filename"] == "invoice_autoposting_office_supplies_portfolio.csv"
 
     queue_response = client.get("/api/v1/review-queue")
     assert queue_response.status_code == 200
     assert queue_response.json() == []
 
-    csv_response = client.get("/api/v1/workflows/invoice_autoposting/exports/csv/download")
+    csv_response = client.get("/api/v1/workflows/invoice_autoposting/exports/csv/download?category=office_supplies")
     assert csv_response.status_code == 200
     csv_text = csv_response.text
     assert "work_item_id" in csv_text
@@ -172,9 +205,10 @@ def test_validate_queues_zero_value_invoice_for_review(client) -> None:
         "Tax: 0.00\n"
         "Total: 0.00\n"
     )
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", invoice_text.encode("utf-8"), "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=invoice_text.encode("utf-8"),
     )
     assert upload_response.status_code == 201
     body = upload_response.json()
@@ -195,9 +229,10 @@ def test_validate_review_approve_auto_export_and_audit_flow(client) -> None:
         "Tax: 5.50\n"
         "Total: 120.00\n"
     )
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", invoice_text.encode("utf-8"), "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=invoice_text.encode("utf-8"),
     )
     assert upload_response.status_code == 201
     validation_body = upload_response.json()
@@ -220,7 +255,7 @@ def test_validate_review_approve_auto_export_and_audit_flow(client) -> None:
     assert review_body["work_item"]["state"] == "exported"
     assert review_body["work_item"]["review_status"] == "approved"
     assert review_body["work_item"]["export_status"] == "completed"
-    assert review_body["artifact"]["filename"] == "invoice_autoposting_portfolio.csv"
+    assert review_body["artifact"]["filename"] == "invoice_autoposting_office_supplies_portfolio.csv"
 
     audit_response = client.get(f"/api/v1/work-items/{work_item_id}/audit")
     assert audit_response.status_code == 200
@@ -244,9 +279,10 @@ def test_review_requires_item_to_be_in_review_queue(client) -> None:
         "Tax: 5.50\n"
         "Total: 125.50\n"
     )
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", invoice_text.encode("utf-8"), "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=invoice_text.encode("utf-8"),
     )
     work_item_id = upload_response.json()["work_item"]["id"]
 
@@ -269,9 +305,10 @@ def test_duplicate_validate_request_returns_conflict(client) -> None:
         "Tax: 5.50\n"
         "Total: 125.50\n"
     )
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", invoice_text.encode("utf-8"), "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=invoice_text.encode("utf-8"),
     )
     work_item_id = upload_response.json()["work_item"]["id"]
     request_key = build_work_item_request_key(action="validate", work_item_id=work_item_id)
@@ -287,21 +324,41 @@ def test_duplicate_validate_request_returns_conflict(client) -> None:
 
 
 def test_delete_work_item_removes_item_and_document(client) -> None:
-    upload_response = client.post(
-        "/api/v1/workflows/invoice_autoposting/documents",
-        files={"file": ("invoice.txt", b"hello", "text/plain")},
+    upload_response = upload_invoice(
+        client,
+        filename="invoice.txt",
+        payload=(
+            b"Acme Office Supply\n"
+            b"Invoice Number: INV-9999\n"
+            b"Invoice Date: 2025-01-15\n"
+            b"Currency: USD\n"
+            b"Subtotal: 120.00\n"
+            b"Tax: 5.50\n"
+            b"Total: 125.50\n"
+        ),
     )
     body = upload_response.json()
     work_item_id = body["work_item"]["id"]
     document_id = body["document"]["id"]
 
+    csv_before_delete = client.get("/api/v1/workflows/invoice_autoposting/exports/csv/download?category=office_supplies")
+    assert csv_before_delete.status_code == 200
+    assert work_item_id in csv_before_delete.text
+
     delete_response = client.delete(f"/api/v1/work-items/{work_item_id}")
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted_work_item_id"] == work_item_id
     assert delete_response.json()["deleted_document_id"] == document_id
+    assert delete_response.json()["removed_csv_rows"] >= 1
 
     get_work_item_response = client.get(f"/api/v1/work-items/{work_item_id}")
     assert get_work_item_response.status_code == 404
 
     get_document_response = client.get(f"/api/v1/documents/{document_id}")
     assert get_document_response.status_code == 404
+
+    csv_after_delete = client.get("/api/v1/workflows/invoice_autoposting/exports/csv/download?category=office_supplies")
+    if csv_after_delete.status_code == 200:
+        assert work_item_id not in csv_after_delete.text
+    else:
+        assert csv_after_delete.status_code == 404

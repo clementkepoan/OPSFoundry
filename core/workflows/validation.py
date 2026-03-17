@@ -9,7 +9,11 @@ from core.workflows.base import BaseWorkflow
 
 class ValidationService:
     def validate_work_item(self, workflow: BaseWorkflow, work_item: WorkItem) -> tuple[WorkItem, ValidationRun]:
-        if not work_item.extracted_data:
+        extracted_payload = work_item.metadata.get("canonical_extracted_data")
+        if not isinstance(extracted_payload, dict):
+            extracted_payload = work_item.extracted_data
+
+        if not extracted_payload:
             run = ValidationRun(status="failed")
             updated_item = work_item.model_copy(
                 update={
@@ -22,7 +26,7 @@ class ValidationService:
             )
             return updated_item, run
 
-        extracted_model = workflow.output_schema_model().model_validate(work_item.extracted_data)
+        extracted_model = workflow.output_schema_model().model_validate(extracted_payload)
         validation_results = workflow.validate_extracted_payload(extracted_model)
         anomalies = workflow.detect_anomalies(extracted_model, validation_results)
 

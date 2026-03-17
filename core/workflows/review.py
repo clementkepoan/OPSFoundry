@@ -30,9 +30,21 @@ class ReviewService:
             raise ValueError("Only work items in the review queue can be approved or rejected.")
 
         extracted_data = work_item.extracted_data
+        metadata = dict(work_item.metadata)
+        canonical_data = metadata.get("canonical_extracted_data")
+        if not isinstance(canonical_data, dict):
+            canonical_data = extracted_data if isinstance(extracted_data, dict) else {}
+
         if updated_data is not None:
-            extracted_model = workflow.output_schema_model().model_validate(updated_data)
-            extracted_data = extracted_model.model_dump(mode="json")
+            merged_payload = {
+                **canonical_data,
+                **updated_data,
+            }
+            extracted_model = workflow.output_schema_model().model_validate(merged_payload)
+            canonical_data = extracted_model.model_dump(mode="json")
+            selected_fields = metadata.get("extraction_settings", {}).get("selected_fields")
+            extracted_data = _filter_payload(canonical_data, selected_fields)
+            metadata["canonical_extracted_data"] = canonical_data
 
         if action == "approve":
             next_state = "approved"
@@ -57,6 +69,16 @@ class ReviewService:
                 "review_notes": review_notes,
                 "review_history": review_history,
                 "extracted_data": extracted_data,
+                "metadata": metadata,
                 "updated_at": datetime.now(UTC),
             }
         )
+
+
+def _filter_payload(payload: dict[str, Any], selected_fields: object) -> dict[str, Any]:
+    if not isinstance(selected_fields, list) or not selected_fields:
+        return payload
+    allowed = {field for field in selected_fields if isinstance(field, str)}
+    if payload.get("explanation") is not None:
+        allowed.add("explanation")
+    return {key: value for key, value in payload.items() if key in allowed}

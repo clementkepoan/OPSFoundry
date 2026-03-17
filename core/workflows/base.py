@@ -19,6 +19,10 @@ class WorkflowMetadata(BaseModel):
     tools: list[str] = Field(default_factory=list)
     validators: list[str] = Field(default_factory=list)
     exports: list[str] = Field(default_factory=list)
+    invoice_categories: list[str] = Field(default_factory=list)
+    extractable_fields: list[str] = Field(default_factory=list)
+    supported_languages: list[str] = Field(default_factory=list)
+    default_target_currency: str = "USD"
     root_dir: Path
 
 

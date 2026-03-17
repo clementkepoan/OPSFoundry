@@ -26,6 +26,7 @@ def test_intake_rolls_back_document_on_work_item_failure(tmp_path: Path) -> None
     with pytest.raises(RuntimeError, match="simulated persistence failure"):
         service.upload_document(
             workflow_name="invoice_autoposting",
+            category="office_supplies",
             initial_state="uploaded",
             filename="invoice.txt",
             content_type="text/plain",

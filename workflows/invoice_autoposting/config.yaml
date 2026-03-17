@@ -29,3 +29,27 @@ validators:
 exports:
   - csv
   - json
+
+invoice_categories: []
+
+extractable_fields:
+  - vendor_name
+  - invoice_number
+  - invoice_date
+  - currency
+  - subtotal
+  - tax_amount
+  - total_amount
+  - payment_terms
+  - line_items
+
+supported_languages:
+  - auto
+  - en
+  - id
+  - zh
+  - es
+  - fr
+  - de
+
+default_target_currency: USD

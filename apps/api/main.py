@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -112,6 +112,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return receipt
 
+    def parse_extraction_settings(
+        workflow,
+        extract_fields: str | None,
+        include_line_items: bool,
+        source_language: str | None,
+        target_currency: str | None,
+    ) -> dict[str, object]:
+        supported_fields = set(workflow.metadata.extractable_fields)
+        parsed_fields = [
+            field.strip()
+            for field in (extract_fields or "").split(",")
+            if field.strip()
+        ]
+        selected_fields = [
+            field for field in parsed_fields if not supported_fields or field in supported_fields
+        ]
+        if not selected_fields and workflow.metadata.extractable_fields:
+            selected_fields = list(workflow.metadata.extractable_fields)
+
+        language = (source_language or "auto").strip().lower()
+        if workflow.metadata.supported_languages and language not in workflow.metadata.supported_languages:
+            language = "auto"
+
+        target = (target_currency or workflow.metadata.default_target_currency or "USD").strip().upper()
+
+        return {
+            "selected_fields": selected_fields,
+            "include_line_items": include_line_items,
+            "source_language": language,
+            "target_currency": target,
+        }
+
     def persist_validation(request: Request, workflow, work_item):
         updated_item, run = request.app.state.validation_service.validate_work_item(workflow, work_item)
         request.app.state.work_item_repository.save(updated_item)
@@ -204,11 +236,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         workflow_name: str,
         request: Request,
         file: UploadFile = File(...),
+        category: str = Form(...),
+        extract_fields: str | None = Form(None),
+        include_line_items: bool = Form(True),
+        source_language: str | None = Form("auto"),
+        target_currency: str | None = Form(None),
     ) -> dict[str, object]:
         try:
             workflow = request.app.state.registry.get(workflow_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown workflow '{workflow_name}'") from exc
+
+        normalized_category = category.strip().lower()
+        if not normalized_category:
+            raise HTTPException(status_code=400, detail="Invoice category is required.")
+        extraction_settings = parse_extraction_settings(
+            workflow=workflow,
+            extract_fields=extract_fields,
+            include_line_items=include_line_items,
+            source_language=source_language,
+            target_currency=target_currency,
+        )
 
         await file.seek(0)
         source = file.file
@@ -220,6 +268,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         request_key = build_upload_request_key(
             workflow_name=workflow.metadata.name,
+            category=normalized_category,
             filename=file.filename or "upload.bin",
             content_type=file.content_type or "application/octet-stream",
             size_bytes=size_bytes,
@@ -230,10 +279,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             receipt = request.app.state.intake_service.upload_document(
                 workflow_name=workflow.metadata.name,
+                category=normalized_category,
                 initial_state=workflow.metadata.states[0] if workflow.metadata.states else "uploaded",
                 filename=file.filename or "upload.bin",
                 content_type=file.content_type or "application/octet-stream",
                 source=source,
+                metadata={"extraction_settings": extraction_settings},
             )
             request.app.state.observability_service.record_workflow_event(
                 event_type="document_uploaded",
@@ -268,6 +319,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request.app.state.request_guard.clear(request_key)
             raise
 
+    @app.post("/api/v1/workflows/{workflow_name}/documents/bulk", status_code=201, tags=["documents"])
+    async def upload_documents_bulk(
+        workflow_name: str,
+        request: Request,
+        files: list[UploadFile] = File(...),
+        category: str = Form(...),
+        extract_fields: str | None = Form(None),
+        include_line_items: bool = Form(True),
+        source_language: str | None = Form("auto"),
+        target_currency: str | None = Form(None),
+    ) -> dict[str, object]:
+        results: list[dict[str, object]] = []
+        for file in files:
+            try:
+                payload = await upload_document(
+                    workflow_name=workflow_name,
+                    request=request,
+                    file=file,
+                    category=category,
+                    extract_fields=extract_fields,
+                    include_line_items=include_line_items,
+                    source_language=source_language,
+                    target_currency=target_currency,
+                )
+                results.append({"status": "ok", "filename": file.filename, "result": payload})
+            except HTTPException as exc:
+                results.append(
+                    {
+                        "status": "failed",
+                        "filename": file.filename,
+                        "error": exc.detail,
+                        "status_code": exc.status_code,
+                    }
+                )
+            finally:
+                await file.close()
+        return {
+            "workflow_name": workflow_name,
+            "category": category.strip().lower(),
+            "results": results,
+        }
+
     @app.get("/api/v1/work-items", tags=["work-items"])
     def list_work_items(request: Request, workflow_name: str | None = None) -> list[dict[str, object]]:
         return [
@@ -292,6 +385,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Unknown work item '{work_item_id}'") from exc
 
         request.app.state.work_item_repository.delete(work_item_id)
+        removed_csv_rows = request.app.state.export_service.remove_work_item_from_category_csv(
+            workflow_name=work_item.workflow_name,
+            category=work_item.category,
+            work_item_id=work_item.id,
+        )
 
         try:
             document = request.app.state.object_store.get_document(work_item.document_id)
@@ -308,6 +406,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "deleted_work_item_id": work_item_id,
             "deleted_document_id": work_item.document_id,
+            "removed_csv_rows": removed_csv_rows,
         }
 
     @app.post("/api/v1/work-items/{work_item_id}/extract", tags=["extract"])
@@ -461,17 +560,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
 
     @app.get("/api/v1/workflows/{workflow_name}/exports/csv/download", tags=["exports"])
-    def download_workflow_csv_export(workflow_name: str, request: Request) -> FileResponse:
+    def download_workflow_csv_export(
+        workflow_name: str,
+        request: Request,
+        category: str = "uncategorized",
+    ) -> FileResponse:
         try:
             request.app.state.registry.get(workflow_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown workflow '{workflow_name}'") from exc
 
-        path = request.app.state.export_service.workflow_csv_path(workflow_name)
+        path = request.app.state.export_service.workflow_csv_path(workflow_name, category=category)
         if not path.exists():
             raise HTTPException(
                 status_code=404,
-                detail=f"No CSV export has been generated yet for workflow '{workflow_name}'.",
+                detail=(
+                    f"No CSV export has been generated yet for workflow '{workflow_name}' "
+                    f"with category '{category}'."
+                ),
             )
 
         return FileResponse(

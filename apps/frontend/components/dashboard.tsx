@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, startTransition, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { API_BASE_URL, apiDelete, apiGet, apiPost } from "../lib/api";
 import styles from "./dashboard.module.css";
@@ -9,6 +10,10 @@ type WorkflowMetadata = {
   name: string;
   description: string;
   states: string[];
+  invoice_categories?: string[];
+  extractable_fields?: string[];
+  supported_languages?: string[];
+  default_target_currency?: string;
 };
 
 type WorkflowDetail = {
@@ -37,6 +42,7 @@ type ExportArtifact = {
 type WorkItem = {
   id: string;
   workflow_name: string;
+  category: string;
   state: string;
   document_id: string;
   filename: string;
@@ -105,6 +111,15 @@ type ReviewResponse = {
 type DeleteResponse = {
   deleted_work_item_id: string;
   deleted_document_id: string;
+  removed_csv_rows?: number;
+};
+
+type BulkProgressState = {
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  currentFile: string | null;
 };
 
 type ActionOutcome = {
@@ -167,23 +182,80 @@ function stageState(item: WorkItem, stage: "extract" | "validate" | "review" | "
 }
 
 export function Dashboard({ workflowName }: { workflowName: string }) {
+  const router = useRouter();
   const [workflow, setWorkflow] = useState<WorkflowDetail | null>(null);
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
   const [reviewQueue, setReviewQueue] = useState<WorkItem[]>([]);
   const [observability, setObservability] = useState<ObservabilityStatus | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Loading workflow HUD...");
   const [reviewNotes, setReviewNotes] = useState("");
   const [editedDataText, setEditedDataText] = useState("{}");
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedFields, setSelectedFields] = useState<string[]>([]);
+  const [sourceLanguage, setSourceLanguage] = useState("auto");
+  const [targetCurrency, setTargetCurrency] = useState("USD");
+  const [includeLineItems, setIncludeLineItems] = useState(true);
+  const [bulkProgress, setBulkProgress] = useState<BulkProgressState | null>(null);
+  const [customCategories, setCustomCategories] = useState<string[]>([]);
 
   const selectedItem = useMemo(
     () => workItems.find((item) => item.id === selectedId) ?? reviewQueue.find((item) => item.id === selectedId) ?? null,
     [reviewQueue, selectedId, workItems],
   );
+  const availableCategories = useMemo(() => {
+    const categories = new Set<string>();
+    for (const category of workflow?.metadata.invoice_categories ?? []) {
+      if (category) categories.add(category);
+    }
+    for (const category of customCategories) {
+      if (category) categories.add(category);
+    }
+    for (const item of workItems) {
+      if (item.category) categories.add(item.category);
+    }
+    for (const item of reviewQueue) {
+      if (item.category) categories.add(item.category);
+    }
+    if (selectedCategory) categories.add(selectedCategory);
+    return Array.from(categories).sort();
+  }, [customCategories, reviewQueue, selectedCategory, workItems, workflow?.metadata.invoice_categories]);
+
+  useEffect(() => {
+    const key = `opsfoundry:categories:${workflowName}`;
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) {
+        setCustomCategories([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setCustomCategories([]);
+        return;
+      }
+      const normalized = parsed
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
+      setCustomCategories(Array.from(new Set(normalized)).sort());
+    } catch {
+      setCustomCategories([]);
+    }
+  }, [workflowName]);
+
+  useEffect(() => {
+    const key = `opsfoundry:categories:${workflowName}`;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(customCategories));
+    } catch {
+      return;
+    }
+  }, [customCategories, workflowName]);
 
   async function refreshAll(preferredId?: string | null) {
     const encodedWorkflow = encodeURIComponent(workflowName);
@@ -198,6 +270,27 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
     setWorkItems(workItemData);
     setReviewQueue(reviewData);
     setObservability(observabilityData);
+
+    if (!selectedCategory) {
+      const inferredCategory =
+        reviewData[0]?.category ??
+        workItemData[0]?.category ??
+        workflowData.metadata.invoice_categories?.[0] ??
+        "";
+      setSelectedCategory(inferredCategory);
+    }
+    if (selectedFields.length === 0 && workflowData.metadata.extractable_fields?.length) {
+      setSelectedFields(workflowData.metadata.extractable_fields);
+    }
+    if (workflowData.metadata.default_target_currency) {
+      setTargetCurrency(workflowData.metadata.default_target_currency);
+    }
+    if (!sourceLanguage && workflowData.metadata.supported_languages?.length) {
+      const defaultLanguage = workflowData.metadata.supported_languages.includes("auto")
+        ? "auto"
+        : workflowData.metadata.supported_languages[0];
+      setSourceLanguage(defaultLanguage);
+    }
 
     const nextId = preferredId ?? selectedId ?? reviewData[0]?.id ?? workItemData[0]?.id ?? null;
     setSelectedId(nextId);
@@ -265,40 +358,129 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedFile) {
-      setStatusMessage("Select a source file before uploading.");
+    if (selectedFiles.length === 0) {
+      setStatusMessage("Select one or more source files before uploading.");
+      return;
+    }
+    const normalizedCategory = selectedCategory.trim().toLowerCase();
+    if (!normalizedCategory) {
+      setStatusMessage("Select an invoice category before uploading.");
+      return;
+    }
+    setCustomCategories((current) =>
+      current.includes(normalizedCategory) ? current : [...current, normalizedCategory].sort()
+    );
+
+    const formData = new FormData();
+    formData.append("category", normalizedCategory);
+    formData.append("extract_fields", selectedFields.join(","));
+    formData.append("include_line_items", String(includeLineItems));
+    formData.append("source_language", sourceLanguage);
+    formData.append("target_currency", targetCurrency.toUpperCase());
+    if (selectedFiles.length === 1) {
+      const onlyFile = selectedFiles[0];
+      formData.append("file", onlyFile);
+      setBulkProgress(null);
+
+      await performAction<UploadReceipt>(
+        `Uploading ${onlyFile.name}`,
+        () =>
+          apiPost<UploadReceipt>(
+            `/api/v1/workflows/${encodeURIComponent(workflowName)}/documents`,
+            formData,
+            idempotencyHeader(
+              `upload:${workflowName}:${normalizedCategory}:${onlyFile.name}:${onlyFile.size}:${onlyFile.lastModified}`,
+            ),
+          ),
+        (receipt) => {
+          setSelectedFiles([]);
+          const validationStatus = receipt.validation?.status;
+          return {
+            focusId: receipt.work_item.id,
+            message:
+              receipt.extraction.status !== "succeeded"
+                ? `Uploaded ${onlyFile.name}, but extraction needs attention.`
+                : validationStatus === "passed"
+                  ? `Uploaded, extracted, validated, and exported ${onlyFile.name}.`
+                  : validationStatus === "needs_review"
+                    ? `Uploaded and routed ${onlyFile.name} to review queue.`
+                    : `Uploaded and extracted ${onlyFile.name}.`,
+          };
+        },
+      );
       return;
     }
 
-    const formData = new FormData();
-    formData.append("file", selectedFile);
+    const files = [...selectedFiles];
+    let succeeded = 0;
+    let failed = 0;
+    let focusId: string | null = null;
+    setBusy(true);
+    setStatusMessage(`Bulk uploading ${files.length} files...`);
+    setBulkProgress({
+      total: files.length,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      currentFile: files[0]?.name ?? null,
+    });
 
-    await performAction<UploadReceipt>(
-      `Uploading ${selectedFile.name}`,
-      () =>
-        apiPost<UploadReceipt>(
-          `/api/v1/workflows/${encodeURIComponent(workflowName)}/documents`,
-          formData,
-          idempotencyHeader(
-            `upload:${workflowName}:${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}`,
-          ),
-        ),
-      (receipt) => {
-        setSelectedFile(null);
-        const validationStatus = receipt.validation?.status;
-        return {
-          focusId: receipt.work_item.id,
-          message:
-            receipt.extraction.status !== "succeeded"
-              ? `Uploaded ${selectedFile.name}, but extraction needs attention.`
-              : validationStatus === "passed"
-                ? `Uploaded, extracted, validated, and exported ${selectedFile.name}.`
-                : validationStatus === "needs_review"
-                  ? `Uploaded and routed ${selectedFile.name} to review queue.`
-                  : `Uploaded and extracted ${selectedFile.name}.`,
-        };
-      },
-    );
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        setBulkProgress((current) =>
+          current
+            ? { ...current, currentFile: file.name }
+            : {
+                total: files.length,
+                completed: index,
+                succeeded,
+                failed,
+                currentFile: file.name,
+              },
+        );
+
+        const singleFormData = new FormData();
+        singleFormData.append("category", normalizedCategory);
+        singleFormData.append("extract_fields", selectedFields.join(","));
+        singleFormData.append("include_line_items", String(includeLineItems));
+        singleFormData.append("source_language", sourceLanguage);
+        singleFormData.append("target_currency", targetCurrency.toUpperCase());
+        singleFormData.append("file", file);
+
+        try {
+          const receipt = await apiPost<UploadReceipt>(
+            `/api/v1/workflows/${encodeURIComponent(workflowName)}/documents`,
+            singleFormData,
+            idempotencyHeader(
+              `upload:${workflowName}:${normalizedCategory}:${file.name}:${file.size}:${file.lastModified}`,
+            ),
+          );
+          succeeded += 1;
+          if (!focusId) {
+            focusId = receipt.work_item.id;
+          }
+        } catch {
+          failed += 1;
+        }
+
+        setBulkProgress({
+          total: files.length,
+          completed: index + 1,
+          succeeded,
+          failed,
+          currentFile: index + 1 < files.length ? files[index + 1].name : null,
+        });
+      }
+
+      setSelectedFiles([]);
+      await refreshAll(focusId ?? selectedId);
+      setStatusMessage(`Bulk upload complete. ${succeeded} succeeded, ${failed} failed.`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Bulk upload failed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleExtract() {
@@ -378,8 +560,13 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
   }
 
   function handleDownloadWorkflowCsv() {
+    const normalizedCategory = selectedCategory.trim().toLowerCase();
+    if (!normalizedCategory) {
+      setStatusMessage("Select an invoice category before downloading CSV.");
+      return;
+    }
     window.open(
-      `${API_BASE_URL}/api/v1/workflows/${encodeURIComponent(workflowName)}/exports/csv/download`,
+      `${API_BASE_URL}/api/v1/workflows/${encodeURIComponent(workflowName)}/exports/csv/download?category=${encodeURIComponent(normalizedCategory)}`,
       "_blank",
       "noopener,noreferrer",
     );
@@ -409,6 +596,9 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
 
   return (
     <main className={styles.shell}>
+      <button type="button" className={styles.backButton} onClick={() => router.push("/")}>
+        Back to workflows
+      </button>
       <section className={styles.hero}>
         <div className={styles.heroCopy}>
           <p className={styles.kicker}>{workflow?.metadata.name ?? workflowName}</p>
@@ -432,6 +622,20 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
             <span>Workflow status</span>
             <strong>{busy ? "Processing" : "Ready"}</strong>
             <p>{statusMessage}</p>
+            {bulkProgress ? (
+              <div className={styles.progressWrap}>
+                <progress
+                  className={styles.progressBar}
+                  max={bulkProgress.total}
+                  value={bulkProgress.completed}
+                />
+                <small className={styles.progressMeta}>
+                  {bulkProgress.completed}/{bulkProgress.total} completed · ok {bulkProgress.succeeded} · failed{" "}
+                  {bulkProgress.failed}
+                  {bulkProgress.currentFile ? ` · current ${bulkProgress.currentFile}` : ""}
+                </small>
+              </div>
+            ) : null}
           </div>
           <div className={styles.metrics}>
             {metrics.map((metric) => (
@@ -452,6 +656,13 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
               <h2>Work item ledger</h2>
             </div>
             <div className={styles.headerActions}>
+              <input
+                className={styles.headerSelect}
+                list="invoice-category-options"
+                value={selectedCategory}
+                onChange={(event) => setSelectedCategory(event.target.value)}
+                placeholder="Category for CSV"
+              />
               <button type="button" className={styles.secondaryButton} onClick={() => void refreshAll(selectedId)}>
                 Refresh
               </button>
@@ -460,6 +671,11 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
               </button>
             </div>
           </div>
+          <datalist id="invoice-category-options">
+            {availableCategories.map((category) => (
+              <option key={category} value={category} />
+            ))}
+          </datalist>
           <div className={styles.ledger}>
             {workItems.length === 0 ? (
               <p className={styles.emptyState}>No work items for this workflow yet.</p>
@@ -467,7 +683,10 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
               workItems.map((item) => (
                 <article
                   key={item.id}
-                  onClick={() => setSelectedId(item.id)}
+                  onClick={() => {
+                    setSelectedId(item.id);
+                    setSelectedCategory(item.category);
+                  }}
                   className={`${styles.ledgerCard} ${styles[itemTone(item)]} ${selectedId === item.id ? styles.activeCard : ""}`}
                   role="button"
                   tabIndex={0}
@@ -499,6 +718,7 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                   </div>
                   <div className={styles.ledgerMeta}>
                     <span>OCR: {humanizeStatus(item.ocr_backend)}</span>
+                    <span>Category: {humanizeStatus(item.category)}</span>
                     <span>Extraction: {humanizeStatus(item.extraction_status)}</span>
                     <span>Validation: {humanizeStatus(item.validation_status)}</span>
                     <span>Review: {humanizeStatus(item.review_status)}</span>
@@ -528,19 +748,99 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                 Workflow
                 <strong>{workflow?.metadata.name ?? workflowName}</strong>
               </label>
+              <label>
+                Invoice category
+                <input
+                  list="invoice-category-options"
+                  value={selectedCategory}
+                  onChange={(event) => setSelectedCategory(event.target.value)}
+                  placeholder="Type or select category"
+                />
+              </label>
+              <label>
+                Source language
+                <select
+                  value={sourceLanguage}
+                  onChange={(event) => setSourceLanguage(event.target.value)}
+                >
+                  {(workflow?.metadata.supported_languages ?? ["auto"]).map((language) => (
+                    <option key={language} value={language}>
+                      {language.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Target currency
+                <input
+                  maxLength={3}
+                  value={targetCurrency}
+                  onChange={(event) => setTargetCurrency(event.target.value.toUpperCase())}
+                />
+              </label>
+              <fieldset className={styles.fieldset}>
+                <legend>Fields to extract</legend>
+                <div className={styles.fieldOptions}>
+                  {(workflow?.metadata.extractable_fields ?? []).map((fieldName) => (
+                    <label key={fieldName} className={styles.checkboxLabel}>
+                      <input
+                        type="checkbox"
+                        checked={selectedFields.includes(fieldName)}
+                        onChange={(event) => {
+                          setSelectedFields((current) =>
+                            event.target.checked
+                              ? [...current, fieldName]
+                              : current.filter((field) => field !== fieldName),
+                          );
+                        }}
+                      />
+                      <span>{humanizeStatus(fieldName)}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={includeLineItems}
+                  onChange={(event) => setIncludeLineItems(event.target.checked)}
+                />
+                <span>Extract detailed line items (quantity, unit price, amount)</span>
+              </label>
               <label className={styles.fileDrop}>
-                <span>Source file</span>
+                <span>Source files</span>
                 <input
                   type="file"
-                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                    setSelectedFile(event.target.files?.[0] ?? null)
-                  }
+                  multiple
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                    setSelectedFiles(Array.from(event.target.files ?? []));
+                    setBulkProgress(null);
+                  }}
                 />
-                <strong>{selectedFile?.name ?? "No file selected"}</strong>
+                <strong>
+                  {selectedFiles.length === 0
+                    ? "No files selected"
+                    : selectedFiles.length === 1
+                      ? selectedFiles[0].name
+                      : `${selectedFiles.length} files selected`}
+                </strong>
               </label>
-              <button type="submit" disabled={busy}>
-                Upload and extract
+              <button type="submit" disabled={busy || !selectedCategory.trim()}>
+                {selectedFiles.length > 1 ? "Bulk upload and process" : "Upload and process"}
               </button>
+              {bulkProgress ? (
+                <div className={styles.progressWrap}>
+                  <progress
+                    className={styles.progressBar}
+                    max={bulkProgress.total}
+                    value={bulkProgress.completed}
+                  />
+                  <small className={styles.progressMeta}>
+                    {bulkProgress.completed}/{bulkProgress.total} completed · ok {bulkProgress.succeeded} · failed{" "}
+                    {bulkProgress.failed}
+                  </small>
+                </div>
+              ) : null}
             </form>
           </article>
 
@@ -560,7 +860,10 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setSelectedId(item.id)}
+                    onClick={() => {
+                      setSelectedId(item.id);
+                      setSelectedCategory(item.category);
+                    }}
                     className={`${styles.reviewCard} ${selectedId === item.id ? styles.reviewCardActive : ""}`}
                   >
                     <div>
@@ -596,6 +899,10 @@ export function Dashboard({ workflowName }: { workflowName: string }) {
                   <div>
                     <span>State</span>
                     <strong>{humanizeStatus(selectedItem.state)}</strong>
+                  </div>
+                  <div>
+                    <span>Category</span>
+                    <strong>{humanizeStatus(selectedItem.category)}</strong>
                   </div>
                   <div>
                     <span>OCR</span>

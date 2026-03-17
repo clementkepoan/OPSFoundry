@@ -14,6 +14,7 @@ def build_export_rows(entry: AccountingEntry) -> list[dict[str, Any]]:
             "quantity": str(line.quantity),
             "unit_price": str(line.unit_price),
             "amount": str(line.amount),
+            "line_subtotal": str(line.amount),
             "account_code": line.account_code or "",
             "cost_center": line.cost_center or "",
             "subtotal": str(entry.subtotal),

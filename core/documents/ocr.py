@@ -211,7 +211,7 @@ class GoogleVisionOCRConsumer(OCRConsumer):
     @staticmethod
     @lru_cache(maxsize=4)
     def _get_client(credentials_path: str | None):
-        from google.cloud import vision
+        vision = _import_google_vision()
 
         if credentials_path:
             from google.oauth2 import service_account
@@ -223,7 +223,7 @@ class GoogleVisionOCRConsumer(OCRConsumer):
         return vision.ImageAnnotatorClient()
 
     def _extract_text_from_bytes(self, content: bytes) -> tuple[str, str | None]:
-        from google.cloud import vision
+        vision = _import_google_vision()
 
         credentials_path = (
             str(self.google_application_credentials)
@@ -313,3 +313,14 @@ class OCRService:
             status="ready",
             warnings=[],
         )
+
+
+def _import_google_vision():
+    try:
+        from google.cloud import vision  # type: ignore
+
+        return vision
+    except ImportError:
+        from google.cloud import vision_v1 as vision  # type: ignore
+
+        return vision

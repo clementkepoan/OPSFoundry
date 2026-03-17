@@ -31,10 +31,12 @@ class DocumentIntakeService:
     def upload_document(
         self,
         workflow_name: str,
+        category: str,
         initial_state: str,
         filename: str,
         content_type: str,
         source: BinaryIO,
+        metadata: dict[str, object] | None = None,
     ) -> IntakeReceipt:
         ocr_consumer = self.ocr_service.create_consumer(content_type)
         document: StoredDocument | None = None
@@ -56,9 +58,11 @@ class DocumentIntakeService:
                 )
             work_item = WorkItem.from_document(
                 workflow_name=workflow_name,
+                category=category,
                 initial_state=initial_state,
                 document=document,
                 ocr_result=ocr_result,
+                metadata=metadata,
             )
             self.work_item_repository.save(work_item)
             return IntakeReceipt(document=document, work_item=work_item, ocr=ocr_result)

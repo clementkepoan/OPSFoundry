@@ -11,6 +11,7 @@ from core.documents.storage import StoredDocument
 class WorkItem(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     workflow_name: str
+    category: str = "uncategorized"
     state: str
     document_id: str
     filename: str
@@ -42,6 +43,7 @@ class WorkItem(BaseModel):
     def from_document(
         cls,
         workflow_name: str,
+        category: str,
         initial_state: str,
         document: StoredDocument,
         ocr_result: OCRResult,
@@ -51,6 +53,7 @@ class WorkItem(BaseModel):
         metadata_payload["ocr_warnings"] = list(ocr_result.warnings)
         return cls(
             workflow_name=workflow_name,
+            category=category,
             state=initial_state,
             document_id=document.id,
             filename=document.filename,

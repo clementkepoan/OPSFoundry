@@ -15,12 +15,14 @@ def _hash_key(prefix: str, value: str) -> str:
 
 def build_upload_request_key(
     workflow_name: str,
+    category: str,
     filename: str,
     content_type: str,
     size_bytes: int,
     client_key: str | None = None,
 ) -> str:
-    basis = client_key or f"{workflow_name}:{filename}:{content_type}:{size_bytes}"
+    payload_basis = f"{workflow_name}:{category}:{filename}:{content_type}:{size_bytes}"
+    basis = f"{client_key}:{payload_basis}" if client_key else payload_basis
     return _hash_key("upload", basis)
 
 

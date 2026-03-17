@@ -4,6 +4,17 @@
   padding: 28px 0 38px;
 }
 
+.backButton {
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 0 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 14px;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
@@ -152,6 +163,22 @@
   line-height: 1.64;
 }
 
+.progressWrap {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.progressBar {
+  width: 100%;
+  height: 10px;
+}
+
+.progressMeta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -201,6 +228,16 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.headerSelect {
+  min-height: 44px;
+  border: 0;
+  border-radius: 12px;
+  padding: 0 12px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.055);
+  font: inherit;
 }
 
 .panel {
@@ -264,6 +301,7 @@
 }
 
 .uploadForm select,
+.uploadForm input,
 .uploadForm button,
 .secondaryButton,
 .actionBar button {
@@ -286,6 +324,12 @@
   background: rgba(255, 255, 255, 0.055);
 }
 
+.uploadForm input {
+  padding: 0 14px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.055);
+}
+
 .fileDrop {
   padding: 18px;
   border-radius: 18px;
@@ -299,6 +343,38 @@
   max-width: 100%;
   margin-top: 8px;
   color: var(--text);
+}
+
+.fieldset {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 12px;
+  margin: 0;
+}
+
+.fieldset legend {
+  color: var(--muted);
+  padding: 0 8px;
+  font-size: 0.85rem;
+}
+
+.fieldOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.checkboxLabel {
+  display: flex !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text) !important;
+}
+
+.checkboxLabel input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
 }
 
 .uploadForm button,
@@ -633,6 +709,10 @@
   }
 
   .reviewCard {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldOptions {
     grid-template-columns: 1fr;
   }
 }
